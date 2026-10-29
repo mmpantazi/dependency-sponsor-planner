@@ -128,41 +128,43 @@ class Http:
     """GET with one shared TLS context and a keep-alive connection per thread and host
     (a fresh handshake per request cost ~0.2 s of CPU each)."""
 
-    def __init__(self, timeout=15, retries=2):
-        self.timeout, self.retries = timeout, retries
+    def __init__(self, timeout=15, retries=2, backoff=1.5):
+        self.timeout, self.retries, self.backoff = timeout, retries, backoff
         self._ctx = ssl.create_default_context()
         self._local = threading.local()
 
-    def _conn(self, host):
+    def _conn(self, scheme, host):
         conns = self._local.__dict__.setdefault("conns", {})
-        if host not in conns:
-            conns[host] = http.client.HTTPSConnection(host, timeout=self.timeout, context=self._ctx)
-        return conns[host]
+        if (scheme, host) not in conns:
+            conns[(scheme, host)] = (http.client.HTTPConnection(host, timeout=self.timeout) if scheme == "http" else
+                                     http.client.HTTPSConnection(host, timeout=self.timeout, context=self._ctx))
+        return conns[(scheme, host)]
 
-    def _drop(self, host):
-        conn = self._local.__dict__.setdefault("conns", {}).pop(host, None)
+    def _drop(self, scheme, host):
+        conn = self._local.__dict__.setdefault("conns", {}).pop((scheme, host), None)
         if conn:
             conn.close()
 
-    def get(self, url, _hops=0):
+    def get(self, url, _hops=0, follow=True):
+        """Return (status, body); body only for 200. 0 = network failure. follow=False returns 3xx as is."""
         parts = urllib.parse.urlsplit(url)
         target = parts.path + ("?" + parts.query if parts.query else "")
         for attempt in range(self.retries + 1):
             try:
-                conn = self._conn(parts.netloc)
+                conn = self._conn(parts.scheme, parts.netloc)
                 conn.request("GET", target, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"})
                 r = conn.getresponse()
                 body = r.read(30_000_000)
-                if r.status in (301, 302, 307, 308) and r.getheader("Location") and _hops < 3:
+                if follow and r.status in (301, 302, 307, 308) and r.getheader("Location") and _hops < 3:
                     return self.get(urllib.parse.urljoin(url, r.getheader("Location")), _hops + 1)
                 if r.status in (429, 500, 502, 503, 504) and attempt < self.retries:
-                    time.sleep(1.5 * (attempt + 1))
+                    time.sleep(self.backoff * (attempt + 1))
                     continue
                 return r.status, body.decode("utf-8", "replace") if r.status == 200 else ""
             except (OSError, http.client.HTTPException):
-                self._drop(parts.netloc)
+                self._drop(parts.scheme, parts.netloc)
                 if attempt < self.retries:
-                    time.sleep(1 + attempt)
+                    time.sleep(self.backoff * (attempt + 1))
                     continue
                 return 0, ""
         return 0, ""
@@ -218,6 +220,18 @@ class Resolver:
             self.cache.put(key, val)
         return val
 
+    def page_exists(self, link):
+        """True/False if the funding page exists, None if we could not tell (network, rate limit)."""
+        def fetch():
+            # GitHub redirects /sponsors/<user> to the profile when the user has not enabled Sponsors
+            code, _ = self.http.get(link.url, follow=link.kind != "github-sponsors")
+            if code in (404, 410) or (link.kind == "github-sponsors" and code in (301, 302, 307, 308)):
+                return {"exists": False}
+            return {"exists": True} if code and code < 400 else {"exists": None, "status": "error"}
+        if self.offline and self.cache.get("page:" + link.url, allow_stale=True) is None:
+            return None
+        return self._cached("page:" + link.url, fetch).get("exists")
+
     def lookup(self, dep):
         raw = self._cached(f"pkg:{dep.ecosystem}:{dep.name}", lambda: self._registry(dep))
         links = [Link(k, u) for k, u in raw.get("links", [])]
@@ -245,7 +259,8 @@ class Resolver:
         return [Link(k, u) for k, u in raw.get("links", [])]
 
     def _registry(self, dep):
-        fn = {"npm": self._npm, "pypi": self._pypi, "cargo": self._cargo, "go": self._go}[dep.ecosystem]
+        fn = {"npm": self._npm, "pypi": self._pypi, "cargo": self._cargo, "go": self._go,
+              "composer": self._composer, "rubygems": self._rubygems}[dep.ecosystem]
         return fn(dep.name, dep.version)
 
     def _json(self, url):
@@ -311,3 +326,25 @@ class Resolver:
     def _go(self, name, version=""):
         gh = github_from_go_module(name)
         return self._pack([], f"https://github.com/{gh[0]}/{gh[1]}" if gh else "", "ok" if gh else "not-found")
+
+    def _composer(self, name, version=""):
+        status, d = self._json(f"https://repo.packagist.org/p2/{urllib.parse.quote(name)}.json")
+        if d is None:
+            return self._pack([], "", status)
+        releases = (d.get("packages") or {}).get(name) or [{}]
+        latest = releases[0]
+        links = []
+        for item in latest.get("funding") or []:
+            url = item.get("url", "")
+            m = re.match(r"^https?://github\.com/([\w.-]+)/?$", url)
+            links.append(make_link(f"https://github.com/sponsors/{m.group(1)}" if m else url))
+        return self._pack(links, (latest.get("source") or {}).get("url", ""))
+
+    def _rubygems(self, name, version=""):
+        status, d = self._json(f"https://rubygems.org/api/v1/gems/{urllib.parse.quote(name)}.json")
+        if d is None:
+            return self._pack([], "", status)
+        meta = d.get("metadata") or {}
+        links = [make_link(meta.get("funding_uri"))]
+        repo = next((u for u in (meta.get("source_code_uri"), d.get("source_code_uri"), d.get("homepage_uri")) if github_repo(u)), "")
+        return self._pack(links, repo)

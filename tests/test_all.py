@@ -79,6 +79,21 @@ class LockfileTests(unittest.TestCase):
         self.assertFalse(g.packages["github.com/spf13/pflag"].direct)
         self.assertEqual(len(g.packages), 3)
 
+    def test_composer_lock_uses_composer_json_and_dev_section(self):
+        g = load("composer", "composer.lock")
+        self.assertIn("monolog/monolog", g.packages)  # names lower-cased
+        self.assertTrue(g.packages["monolog/monolog"].direct)
+        self.assertEqual(g.packages["psr/log"].depth, 2)
+        self.assertTrue(g.packages["phpunit/phpunit"].dev)
+        self.assertNotIn("php", g.packages)
+
+    def test_gemfile_lock(self):
+        g = load("gem", "Gemfile.lock")
+        self.assertEqual(set(g.packages), {"rack", "sinatra", "mustermann", "rspec"})
+        self.assertTrue(g.packages["sinatra"].direct and g.packages["rspec"].direct)
+        self.assertEqual(g.packages["rack"].depth, 2)
+        self.assertEqual(g.packages["rspec"].version, "3.13.0")
+
     def test_requirements(self):
         g = load("req", "requirements.txt")
         self.assertEqual(set(g.packages), {"flask", "rich"})  # follows -r, survives include cycles
@@ -185,6 +200,29 @@ class RegistryTests(unittest.TestCase):
                                                    "https://raw.githubusercontent.com/o/.github/HEAD/FUNDING.yml": "github: o\n"})
         self.assertEqual(info.links[0].url, "https://github.com/sponsors/o")
 
+    def test_packagist_funding_maps_github_profile_to_sponsors(self):
+        doc = json.dumps({"packages": {"monolog/monolog": [{"funding": [
+            {"url": "https://github.com/Seldaek", "type": "github"},
+            {"url": "https://tidelift.com/funding/github/packagist/monolog/monolog", "type": "tidelift"}]}]}})
+        info, _ = self.lookup("composer", "monolog/monolog", "3.5.0", {"https://repo.packagist.org/p2/monolog/monolog.json": doc})
+        self.assertEqual(info.links[0].url, "https://github.com/sponsors/Seldaek")
+        self.assertEqual(best_link(info.links).kind, "github-sponsors")
+
+    def test_rubygems_funding_uri(self):
+        doc = json.dumps({"metadata": {"funding_uri": "https://opencollective.com/rubocop"}, "homepage_uri": "https://rubocop.org"})
+        info, _ = self.lookup("rubygems", "rubocop", "1.0", {"https://rubygems.org/api/v1/gems/rubocop.json": doc})
+        self.assertEqual(info.links[0].url, "https://opencollective.com/rubocop")
+
+    def test_page_exists_semantics(self):
+        gh = Link("github-sponsors", "https://github.com/sponsors/x")
+        oc = Link("open-collective", "https://opencollective.com/x")
+        res = lambda routes: Resolver(FakeHttp(routes), Cache())
+        self.assertTrue(res({"https://github.com/sponsors/x": (200, "")}).page_exists(gh))
+        self.assertFalse(res({"https://github.com/sponsors/x": (302, "")}).page_exists(gh))  # profile without Sponsors
+        self.assertFalse(res({"https://opencollective.com/x": (404, "")}).page_exists(oc))
+        self.assertIsNone(res({"https://opencollective.com/x": (0, "")}).page_exists(oc))
+        self.assertIsNone(res({"https://opencollective.com/x": (429, "")}).page_exists(oc))
+
     def test_go_module_path_maps_to_github(self):
         info, _ = self.lookup("go", "github.com/o/r/v2", "v2.0.0", {"https://raw.githubusercontent.com/o/r/HEAD/.github/FUNDING.yml": "github: o\n"})
         self.assertEqual(info.links[0].url, "https://github.com/sponsors/o")
@@ -208,11 +246,58 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(cache.get("pkg:npm:z"))
 
 
+class HttpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+        hits = cls.hits = {}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                hits[self.path] = hits.get(self.path, 0) + 1
+                code, loc = {"/ok": (200, None), "/redir": (302, "/ok"), "/gone": (404, None),
+                             "/flaky": (200 if hits.get("/flaky", 0) > 1 else 503, None)}[self.path]
+                self.send_response(code)
+                if loc:
+                    self.send_header("Location", loc)
+                body = b"hello"
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def test_get_follow_retry_and_missing(self):
+        from sponsorplan.funding import Http
+        h = Http(retries=2, backoff=0)
+        self.assertEqual(h.get(self.base + "/ok"), (200, "hello"))
+        self.assertEqual(h.get(self.base + "/ok"), (200, "hello"))  # keep-alive connection reused
+        self.assertEqual(h.get(self.base + "/redir"), (200, "hello"))
+        self.assertEqual(h.get(self.base + "/redir", follow=False), (302, ""))
+        self.assertEqual(h.get(self.base + "/gone"), (404, ""))
+        self.assertEqual(h.get(self.base + "/flaky"), (200, "hello"))
+        self.assertEqual(self.hits["/flaky"], 2)
+
+    def test_connection_refused_is_status_zero(self):
+        from sponsorplan.funding import Http
+        self.assertEqual(Http(retries=1, backoff=0).get("http://127.0.0.1:1/x"), (0, ""))
+
+
 class FakeHttp:
     def __init__(self, routes):
         self.routes, self.calls = routes, []
 
-    def get(self, url):
+    def get(self, url, follow=True):
         self.calls.append(url)
         for k, v in self.routes.items():
             if url.startswith(k):
@@ -234,7 +319,7 @@ NPM_ROUTES = {
 
 class PlannerTests(unittest.TestCase):
     def plan(self, **kw):
-        http = FakeHttp(NPM_ROUTES)
+        http = FakeHttp(kw.pop("routes", NPM_ROUTES))
         http.retries = 0
         res = Resolver(http, Cache(), repo_lookup=kw.pop("repo_lookup", True))
         return build_plan([FIX / "npm"], kw.pop("budget", 100), resolver=res, min_amount=kw.pop("min_amount", 0), **kw), http
@@ -291,6 +376,17 @@ class PlannerTests(unittest.TestCase):
         urls = {s.recipient.link.url for s in plan.shares}
         self.assertNotIn("https://github.com/sponsors/zed", urls)
         self.assertFalse([u for u in urls if "opencollective" in u])
+        self.assertEqual(sum(s.cents for s in plan.shares), 10000)
+
+    def test_verify_drops_dead_pages_and_resplits(self):
+        routes = dict(NPM_ROUTES)
+        routes["https://github.com/sponsors/zed"] = (404, "")
+        routes["https://opencollective.com/a"] = (200, "")
+        routes["https://github.com/sponsors/bob"] = (200, "")
+        plan, _ = self.plan(verify=True, routes=routes)
+        urls = {s.recipient.link.url for s in plan.shares}
+        self.assertNotIn("https://github.com/sponsors/zed", urls)
+        self.assertEqual(plan.dead, ["https://github.com/sponsors/zed"])
         self.assertEqual(sum(s.cents for s in plan.shares), 10000)
 
     def test_missing_lockfile(self):
@@ -419,6 +515,17 @@ class CliTests(unittest.TestCase):
             _, ro, _ = self.run_cli(*base, "-l", "ro")
             self.assertIn("Plan de sponsorizare", ro)
             self.assertIn("Pe an", ro)
+
+    def test_detail_lists_packages(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cp = Path(d) / "c.json"
+            http = FakeHttp(NPM_ROUTES)
+            http.retries = 0
+            build_plan([FIX / "npm"], 100, resolver=Resolver(http, Cache(cp)))
+            code, out, _ = self.run_cli(str(FIX / "npm"), "-b", "100", "--offline", "--cache", str(cp), "--detail", "--min", "0")
+            self.assertIn("Packages behind each recipient", out)
+            self.assertRegex(out, r"   a 1\.0\.0  \[direct\]  1\.\d\d")
 
     def test_devs_budget(self):
         code, _, err = self.run_cli(str(FIX / "npm"), "--devs", "3", "--offline", "--cache", "/nonexistent/x.json")

@@ -33,6 +33,9 @@ def _parser():
     p.add_argument("-l", "--lang", choices=["en", "ro"], default="en")
     p.add_argument("-o", "--output", help="write the report to a file")
     p.add_argument("--unfunded", type=int, default=10, help="how many heavily used but unfunded packages to list (default 10)")
+    p.add_argument("--verify", action="store_true",
+                   help="check that each funding page exists (e.g. GitHub Sponsors profile enabled); dead ones are skipped")
+    p.add_argument("--detail", action="store_true", help="list the packages and reliance scores behind each recipient")
     p.add_argument("--offline", action="store_true", help="use only the local cache, no network")
     p.add_argument("--no-repo-lookup", action="store_true", help="skip FUNDING.yml lookups in package repositories")
     p.add_argument("--cache", default=os.environ.get("SPONSOR_PLAN_CACHE") or str(Path.home() / ".cache" / "sponsor-planner" / "cache.json"),
@@ -67,12 +70,12 @@ def main(argv=None):
     try:
         plan = build_plan(a.paths, budget, a.currency, a.exclude, not a.no_dev, a.exponent, a.min_amount,
                           a.max_share, a.top, a.skip_recipient, cache_path=a.cache, offline=a.offline,
-                          repo_lookup=not a.no_repo_lookup, progress=progress)
+                          repo_lookup=not a.no_repo_lookup, progress=progress, verify=a.verify)
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    text = {"text": lambda: report.render_text(plan, a.lang, a.unfunded),
-            "md": lambda: report.render_text(plan, a.lang, a.unfunded, markdown=True),
+    text = {"text": lambda: report.render_text(plan, a.lang, a.unfunded, detail=a.detail),
+            "md": lambda: report.render_text(plan, a.lang, a.unfunded, markdown=True, detail=a.detail),
             "csv": lambda: report.render_csv(plan),
             "json": lambda: report.render_json(plan)}[a.format]()
     if a.output:

@@ -9,7 +9,8 @@ from .model import Graph
 LOCKFILES = {
     "package-lock.json": "npm", "npm-shrinkwrap.json": "npm", "yarn.lock": "npm",
     "pnpm-lock.yaml": "npm", "poetry.lock": "pypi", "uv.lock": "pypi",
-    "requirements.txt": "pypi", "Cargo.lock": "cargo", "go.mod": "go",
+    "requirements.txt": "pypi", "Cargo.lock": "cargo", "go.mod": "go", "composer.lock": "composer",
+    "Gemfile.lock": "rubygems",
 }
 SKIP_DIRS = {"node_modules", ".git", "vendor", ".venv", "venv", "target", "dist", "build"}
 
@@ -29,7 +30,8 @@ def parse(path):
     path = Path(path)
     fn = {"package-lock.json": npm_lock, "npm-shrinkwrap.json": npm_lock, "yarn.lock": yarn_lock,
           "pnpm-lock.yaml": pnpm_lock, "poetry.lock": poetry_lock, "uv.lock": uv_lock,
-          "requirements.txt": requirements, "Cargo.lock": cargo_lock, "go.mod": go_mod}[path.name]
+          "requirements.txt": requirements, "Cargo.lock": cargo_lock, "go.mod": go_mod,
+          "composer.lock": composer_lock, "Gemfile.lock": gemfile_lock}[path.name]
     g = fn(path)
     g.source = str(path)
     return g.finalize()
@@ -332,4 +334,53 @@ def go_mod(path):
             g.add(m.group(1), m.group(2))
             if not m.group(3):
                 g.roots.append((m.group(1), False))
+    return g
+
+
+def composer_lock(path):
+    data = json.loads(_text(path))
+    g = Graph("composer")
+    dev_names = set()
+    for key, is_dev in (("packages", False), ("packages-dev", True)):
+        for p in data.get(key, []):
+            name = p["name"].lower()
+            g.add(name, p.get("version", "").lstrip("v"),
+                  [d.lower() for d in p.get("require", {}) if "/" in d])
+            if is_dev:
+                dev_names.add(name)
+    cj = Path(path).parent / "composer.json"
+    if cj.exists():
+        try:
+            meta = json.loads(_text(cj))
+        except ValueError:
+            meta = {}
+        g.roots = [(n.lower(), False) for n in meta.get("require", {}) if "/" in n]
+        g.roots += [(n.lower(), True) for n in meta.get("require-dev", {}) if "/" in n]
+    elif dev_names:
+        g.roots = [(n, n in dev_names) for n in g.packages]
+    return g
+
+
+def gemfile_lock(path):
+    g = Graph("rubygems")
+    section, current = None, None
+    for ln in _text(path).splitlines():
+        if ln and not ln.startswith(" "):
+            section, current = ln.strip(), None
+            continue
+        if section == "GEM" or section.startswith(("GIT", "PATH")):
+            m = re.match(r"^    ([^\s(]+) \(([^)]+)\)$", ln)
+            if m:
+                current = m.group(1)
+                g.add(current, m.group(2).split("-")[0])
+                continue
+            m = re.match(r"^      ([^\s(]+)", ln)
+            if m and current:
+                g.packages[current].deps.add(m.group(1))
+        elif section == "DEPENDENCIES":
+            m = re.match(r"^  ([^\s(!]+)", ln)
+            if m:
+                g.roots.append((m.group(1), False))
+    for n, p in g.packages.items():
+        p.deps = {d for d in p.deps if d in g.packages}
     return g

@@ -20,6 +20,8 @@ class Plan:
     unknown: int = 0                               # packages whose registry could not be queried
     funded_packages: int = 0
     excluded: int = 0
+    dead: list = field(default_factory=list)       # funding pages that no longer exist (--verify)
+    unverified: int = 0
 
 
 def merge_graphs(graphs):
@@ -41,7 +43,7 @@ def merge_graphs(graphs):
 
 def build_plan(paths, budget, currency="USD", exclude=(), include_dev=True, exponent=0.7, min_amount=5.0,
                max_share=0.3, top=None, skip_recipients=(), resolver=None, cache_path=None, offline=False, workers=12,
-               repo_lookup=True, progress=None):
+               repo_lookup=True, progress=None, verify=False):
     files = []
     for path in paths:
         files += lockfiles.find_lockfiles(path)
@@ -73,6 +75,14 @@ def build_plan(paths, budget, currency="USD", exclude=(), include_dev=True, expo
     unfunded = sorted(((d, reliance(d)) for d, i in zip(deps, infos) if not i.links and i.status in ("ok", "not-found")),
                       key=lambda t: -t[1])
     recipients = [r for r in group_by_recipient(funded) if not is_excluded(r.link.url.removeprefix("https://"), skip_recipients)]
+    dead, unverified = [], 0
+    if verify:
+        with ThreadPoolExecutor(workers) as pool:
+            states = list(pool.map(lambda r: resolver.page_exists(r.link), recipients))
+        cache.save()
+        dead = [r.link.url for r, ok in zip(recipients, states) if ok is False]
+        unverified = sum(ok is None for ok in states)
+        recipients = [r for r, ok in zip(recipients, states) if ok is not False]
     shares, leftover = split(recipients, budget, exponent, min_amount, max_share, top)
     return Plan(budget, currency, [str(f) for f in files], len(deps) + len(excluded), shares, leftover / 100, unfunded,
-                sum(1 for i in infos if i.status in ("error", "offline")), len(funded), len(excluded))
+                sum(1 for i in infos if i.status in ("error", "offline")), len(funded), len(excluded), dead, unverified)

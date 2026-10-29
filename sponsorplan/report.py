@@ -13,6 +13,9 @@ STRINGS = {
         "unfunded_hint": "No money route found. Consider code, bug reports or thanking them instead.",
         "nothing": "No funding links found for any package.", "excluded": "Packages excluded by --exclude: {n}",
         "package": "Package", "score": "Reliance", "more": "+{n} more",
+        "dead": "Funding pages that no longer exist (skipped): {n}",
+        "unverified": "Funding pages that could not be verified: {n}", "detail": "Packages behind each recipient",
+        "direct": "direct", "dev": "dev", "indirect": "indirect",
     },
     "ro": {
         "title": "Plan de sponsorizare a dependențelor", "budget": "Buget pe an", "lockfiles": "Fișiere lock",
@@ -24,6 +27,9 @@ STRINGS = {
         "unfunded_hint": "Nu există o cale de plată. Poți contribui cu cod, rapoarte de bug sau mulțumiri.",
         "nothing": "Niciun pachet nu are link de finanțare.", "excluded": "Pachete excluse prin --exclude: {n}",
         "package": "Pachet", "score": "Dependență", "more": "+{n} altele",
+        "dead": "Pagini de finanțare care nu mai există (omise): {n}",
+        "unverified": "Pagini de finanțare care nu au putut fi verificate: {n}", "detail": "Pachetele din spatele fiecărui destinatar",
+        "direct": "direct", "dev": "dev", "indirect": "indirect",
     },
 }
 
@@ -46,7 +52,7 @@ def money(x, cur):
     return f"{x:,.2f} {cur}"
 
 
-def render_text(plan, lang="en", unfunded_limit=10, markdown=False):
+def render_text(plan, lang="en", unfunded_limit=10, markdown=False, detail=False):
     t = STRINGS[lang]
     out = []
     h = (lambda s: f"## {s}") if markdown else (lambda s: s)
@@ -57,6 +63,10 @@ def render_text(plan, lang="en", unfunded_limit=10, markdown=False):
         out.append(t["excluded"].format(n=plan.excluded))
     if plan.unknown:
         out.append(t["unknown"].format(n=plan.unknown))
+    if plan.dead:
+        out.append(t["dead"].format(n=len(plan.dead)) + ": " + ", ".join(u.removeprefix("https://") for u in plan.dead))
+    if plan.unverified:
+        out.append(t["unverified"].format(n=plan.unverified))
     out.append("")
     data = rows(plan, lang)
     if not data:
@@ -70,6 +80,14 @@ def render_text(plan, lang="en", unfunded_limit=10, markdown=False):
         if plan.leftover:
             out.append("")
             out.append(t["leftover"].format(x=money(plan.leftover, plan.currency)))
+    if detail and plan.shares:
+        out.append("")
+        out.append(h(t["detail"]))
+        for i, sh in enumerate(plan.shares, 1):
+            out.append(f"{i}. {sh.recipient.link.url}")
+            for dep, score in sh.recipient.packages:
+                kind = t["direct"] if dep.direct else t["indirect"]
+                out.append(f"   {dep.name} {dep.version}".rstrip() + f"  [{kind}{', ' + t['dev'] if dep.dev else ''}]  {score:.2f}")
     if plan.unfunded and unfunded_limit:
         out.append("")
         out.append(h(t["unfunded"]))
@@ -103,7 +121,7 @@ def render_json(plan):
     return json.dumps({
         "budget": plan.budget, "currency": plan.currency, "lockfiles": plan.lockfiles,
         "packages_scanned": plan.total_packages, "packages_funded": plan.funded_packages,
-        "unchecked": plan.unknown, "leftover": plan.leftover,
+        "unchecked": plan.unknown, "dead_pages": plan.dead, "leftover": plan.leftover,
         "recipients": [{**r, "packages_detail": [{"name": p.name, "ecosystem": p.ecosystem, "reliance": round(sc, 3)}
                                                  for p, sc in s.recipient.packages]}
                        for r, s in zip(rows(plan), plan.shares)],
