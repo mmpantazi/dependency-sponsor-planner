@@ -132,7 +132,7 @@ class Http:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                    return r.status, r.read(2_000_000).decode("utf-8", "replace")
+                    return r.status, r.read(30_000_000).decode("utf-8", "replace")
             except urllib.error.HTTPError as e:
                 if e.code in (429, 500, 502, 503, 504) and attempt < self.retries:
                     time.sleep(1.5 * (attempt + 1))
@@ -222,7 +222,7 @@ class Resolver:
 
     def _registry(self, dep):
         fn = {"npm": self._npm, "pypi": self._pypi, "cargo": self._cargo, "go": self._go}[dep.ecosystem]
-        return fn(dep.name)
+        return fn(dep.name, dep.version)
 
     def _json(self, url):
         code, text = self.http.get(url)
@@ -241,7 +241,7 @@ class Resolver:
                 uniq.append(l)
         return {"links": [[l.kind, l.url] for l in uniq], "repo": repo, "status": status}
 
-    def _npm(self, name):
+    def _npm(self, name, version=""):
         status, d = self._json("https://registry.npmjs.org/" + urllib.parse.quote(name, safe="@") + "/latest")
         if d is None:
             return self._pack([], "", status)
@@ -252,8 +252,12 @@ class Resolver:
         repo = repo if isinstance(repo, str) else (repo or {}).get("url", "")
         return self._pack(links, repo)
 
-    def _pypi(self, name):
-        status, d = self._json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json")
+    def _pypi(self, name, version=""):
+        base = f"https://pypi.org/pypi/{urllib.parse.quote(name)}"
+        # the per-release document is a few KB; the project document lists every release (SQLAlchemy: 5 MB)
+        status, d = self._json(f"{base}/{urllib.parse.quote(version)}/json") if version else ("not-found", None)
+        if d is None and status == "not-found":
+            status, d = self._json(f"{base}/json")
         if d is None:
             return self._pack([], "", status)
         info = d.get("info") or {}
@@ -264,7 +268,7 @@ class Resolver:
         repo = next((u for u in list(urls.values()) + [info.get("home_page") or ""] if github_repo(u)), "")
         return self._pack(links, repo)
 
-    def _cargo(self, name):
+    def _cargo(self, name, version=""):
         status, d = self._json(f"https://crates.io/api/v1/crates/{urllib.parse.quote(name)}")
         if d is None:
             return self._pack([], "", status)
@@ -272,6 +276,6 @@ class Resolver:
         repo = next((u for u in (c.get("repository"), c.get("homepage")) if github_repo(u)), "")
         return self._pack([], repo)
 
-    def _go(self, name):
+    def _go(self, name, version=""):
         gh = github_from_go_module(name)
         return self._pack([], f"https://github.com/{gh[0]}/{gh[1]}" if gh else "", "ok" if gh else "not-found")

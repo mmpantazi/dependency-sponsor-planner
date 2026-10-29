@@ -39,6 +39,13 @@ class LockfileTests(unittest.TestCase):
         self.assertTrue(g.packages["@scope/x"].direct)
         self.assertFalse(g.packages["y"].direct)
 
+    def test_yarn_berry(self):
+        g = load("yarn-berry", "yarn.lock")
+        self.assertEqual(set(g.packages), {"lodash", "@types/node", "x"})
+        self.assertEqual(g.packages["lodash"].version, "4.17.21")
+        self.assertTrue(g.packages["x"].direct)
+        self.assertEqual(g.packages["lodash"].depth, 2)
+
     def test_pnpm_v9(self):
         g = load("pnpm", "pnpm-lock.yaml")
         self.assertEqual(set(g.packages), {"foo", "baz", "@types/bar"})
@@ -140,6 +147,45 @@ ko_fi:
         self.assertIsNone(github_repo("https://gitlab.com/o/r"))
 
 
+class RegistryTests(unittest.TestCase):
+    def lookup(self, eco, name, version, routes):
+        http = FakeHttp(routes)
+        http.retries = 0
+        return Resolver(http, Cache()).lookup(Dep(eco, name, version)), http
+
+    def test_pypi_project_urls_and_release_document(self):
+        doc = json.dumps({"info": {"project_urls": {"Funding": "https://github.com/sponsors/pallets", "Source": "https://github.com/pallets/flask"}}})
+        info, http = self.lookup("pypi", "flask", "3.0.0", {"https://pypi.org/pypi/flask/3.0.0/json": doc})
+        self.assertEqual(info.links[0].url, "https://github.com/sponsors/pallets")
+        self.assertEqual(len(http.calls), 1)
+
+    def test_pypi_falls_back_to_repo_funding_yml(self):
+        doc = json.dumps({"info": {"project_urls": {"Homepage": "https://github.com/o/r"}}})
+        info, _ = self.lookup("pypi", "p", "", {"https://pypi.org/pypi/p/json": doc,
+                                               "https://raw.githubusercontent.com/o/r/HEAD/.github/FUNDING.yml": "open_collective: r\n"})
+        self.assertEqual(info.links[0].url, "https://opencollective.com/r")
+
+    def test_org_level_funding_yml(self):
+        doc = json.dumps({"crate": {"repository": "https://github.com/o/r"}})
+        info, _ = self.lookup("cargo", "r", "1.0", {"https://crates.io/api/v1/crates/r": doc,
+                                                   "https://raw.githubusercontent.com/o/.github/HEAD/FUNDING.yml": "github: o\n"})
+        self.assertEqual(info.links[0].url, "https://github.com/sponsors/o")
+
+    def test_go_module_path_maps_to_github(self):
+        info, _ = self.lookup("go", "github.com/o/r/v2", "v2.0.0", {"https://raw.githubusercontent.com/o/r/HEAD/.github/FUNDING.yml": "github: o\n"})
+        self.assertEqual(info.links[0].url, "https://github.com/sponsors/o")
+        info, _ = self.lookup("go", "golang.org/x/sys", "v0.1.0", {})
+        self.assertEqual(info.links, [])
+
+    def test_network_failure_is_not_cached_as_unfunded(self):
+        cache = Cache()
+        http = FakeHttp({"https://registry.npmjs.org/z/latest": (0, "")})
+        http.retries = 0
+        info = Resolver(http, cache).lookup(Dep("npm", "z"))
+        self.assertEqual(info.status, "error")
+        self.assertIsNone(cache.get("pkg:npm:z"))
+
+
 class FakeHttp:
     def __init__(self, routes):
         self.routes, self.calls = routes, []
@@ -237,10 +283,10 @@ class AllocateTests(unittest.TestCase):
         self.assertGreater(shares[0].cents, shares[1].cents)
 
     def test_cap_redistributes(self):
-        rs = [recip("a", 100), recip("b", 1), recip("c", 1)]
+        rs = [recip("a", 100)] + [recip(c, 1) for c in "bcdef"]
         shares, _ = split(rs, 100, exponent=1, min_amount=0, max_share=0.5)
         self.assertEqual(shares[0].cents, 5000)
-        self.assertEqual(shares[1].cents + shares[2].cents, 5000)
+        self.assertEqual(sum(s.cents for s in shares[1:]), 5000)
 
     def test_min_amount_drops_and_resplits(self):
         rs = [recip("a", 100), recip("b", 20), recip("c", 0.1)]
@@ -265,6 +311,11 @@ class AllocateTests(unittest.TestCase):
         shares, _ = split(rs, 10, top=2, max_share=0.1, min_amount=0)
         self.assertEqual(sum(s.cents for s in shares), 1000)  # cap impossible -> still spends everything
         self.assertEqual(len(shares), 2)
+
+    def test_cap_relaxes_for_short_lists(self):
+        shares, _ = split([recip("a", 10), recip("b", 2), recip("c", 1)], 100, exponent=1, min_amount=0)
+        self.assertGreater(shares[0].cents, shares[1].cents)
+        self.assertGreater(shares[1].cents, shares[2].cents)
 
     def test_empty(self):
         self.assertEqual(split([], 10), ([], 1000))

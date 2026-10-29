@@ -18,9 +18,7 @@ def _water_fill(weights, total, cap_share):
     n = len(weights)
     if n == 0:
         return []
-    cap = total * cap_share
-    if cap * n < total:  # cap too tight to ever place everything
-        cap = total / n
+    cap = total * max(cap_share, 2 / n)  # relaxed for short lists so the ranking survives
     alloc = [None] * n
     remaining, free = total, list(range(n))
     while free:
