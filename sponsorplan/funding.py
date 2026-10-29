@@ -166,8 +166,11 @@ class Cache:
 
     def save(self):
         if self.path:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self.data))
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.path.write_text(json.dumps(self.data))
+            except OSError:
+                pass  # the cache is an optimisation only
 
 
 @dataclass

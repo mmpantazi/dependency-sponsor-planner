@@ -1,0 +1,18 @@
+version = 3
+[[package]]
+name = "myapp"
+version = "0.1.0"
+dependencies = ["serde 1.0.0", "tokio"]
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = ["serde_derive"]
+[[package]]
+name = "serde_derive"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "tokio"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"

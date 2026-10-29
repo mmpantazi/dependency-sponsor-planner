@@ -1,0 +1,21 @@
+version = 1
+[[package]]
+name = "myapp"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "httpx" }]
+[package.dev-dependencies]
+dev = [{ name = "ruff" }]
+[[package]]
+name = "httpx"
+version = "0.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [{ name = "anyio" }]
+[[package]]
+name = "anyio"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+[[package]]
+name = "ruff"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }

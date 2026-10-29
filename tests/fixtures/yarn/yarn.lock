@@ -1,0 +1,11 @@
+# yarn lockfile v1
+
+"@scope/x@^1.0.0", "@scope/x@^1.2.0":
+  version "1.2.3"
+  resolved "https://registry.yarnpkg.com/@scope/x/-/x-1.2.3.tgz"
+  dependencies:
+    y "^2.0.0"
+
+y@^2.0.0:
+  version "2.1.0"
+  resolved "https://registry.yarnpkg.com/y/-/y-2.1.0.tgz"

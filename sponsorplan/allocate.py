@@ -49,9 +49,8 @@ def split(recipients, budget, exponent=0.7, min_amount=5.0, max_share=0.3, top=N
         amounts = _water_fill(weights, total, max_share)
         if min_amount > 0:
             keep = [i for i, a in enumerate(amounts) if a / 100 >= min_amount]
-            if len(keep) < len(pool):
-                if not keep:
-                    keep = [0]
+            if len(keep) < len(pool) and len(pool) > 1:
+                keep = keep or [0]
                 pool = [pool[i] for i in keep]
                 continue
         break

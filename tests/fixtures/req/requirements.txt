@@ -1,0 +1,4 @@
+# pinned
+flask==3.0.0
+requests>=2  # http
+-r other.txt

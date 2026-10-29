@@ -96,7 +96,7 @@ def yarn_lock(path):
             for n in cur_names:
                 g.add(n, version, deps)
 
-    for ln in lines + [""]:
+    for ln in lines:
         if not ln.strip() or ln.lstrip().startswith("#"):
             continue
         if not ln.startswith(" "):
@@ -113,6 +113,7 @@ def yarn_lock(path):
                 version = s.split(None, 1)[1].strip('"')
             elif s in ("dependencies:", "optionalDependencies:"):
                 section = "deps"
+    flush()
     g.roots = _package_json_roots(Path(path).parent)
     return g
 
@@ -127,7 +128,7 @@ def _yarn_berry(lines, path):
                 if n:
                     g.add(n, version, deps)
 
-    for ln in lines + [""]:
+    for ln in lines:
         if not ln.strip() or ln.lstrip().startswith("#"):
             continue
         if not ln.startswith(" "):
@@ -150,8 +151,9 @@ def _yarn_berry(lines, path):
             s = ln.strip()
             if s.startswith("version:"):
                 version = s.split(":", 1)[1].strip().strip('"')
-            elif s in ("dependencies:",):
+            elif s == "dependencies:":
                 section = "deps"
+    flush()
     g.roots = _package_json_roots(Path(path).parent)
     return g
 
