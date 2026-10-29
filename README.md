@@ -22,6 +22,23 @@ Supported lockfiles: `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (v1
 (skipping `node_modules`, `vendor`, virtualenvs). Several lockfiles are merged into one plan.
 A package declared only as a devDependency but also pulled in by production code counts at the higher of the two weights.
 
+## Example
+
+```
+$ python -m sponsorplan tests/fixtures/composer -b 100
+Dependency sponsorship plan
+Budget per year: 100.00 USD  |  Lockfiles: tests/fixtures/composer/composer.lock
+4 packages scanned, 4 accept funding (4 recipients after grouping by funding page)
+
+Where to send it
+#  Where to send it                               Platform         Per year  Per month  Share  Covers (top packages)
+-  ---------------------------------------------  ---------------  --------  ---------  -----  ---------------------
+1  https://github.com/sponsors/Seldaek            github-sponsors  41.75     3.48       41.8%  monolog/monolog
+2  https://opencollective.com/php-fig             open-collective  29.20     2.43       29.2%  psr/log
+3  https://phpunit.de/sponsoring.html             other            17.98     1.50       18.0%  phpunit/phpunit
+4  https://github.com/sponsors/sebastianbergmann  github-sponsors  11.07     0.92       11.1%  sebastian/diff
+```
+
 ## How the money is split
 
 1. **Reliance score per package.** Direct production dependency = 1.0, direct dev = 0.3, transitive production = 0.4
