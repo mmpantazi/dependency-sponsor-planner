@@ -81,7 +81,7 @@ class LockfileTests(unittest.TestCase):
 
     def test_requirements(self):
         g = load("req", "requirements.txt")
-        self.assertEqual(set(g.packages), {"flask", "requests"})
+        self.assertEqual(set(g.packages), {"flask", "rich"})  # follows -r, survives include cycles
         self.assertEqual(g.packages["flask"].version, "3.0.0")
 
     def test_find_lockfiles_skips_node_modules(self):
@@ -91,6 +91,20 @@ class LockfileTests(unittest.TestCase):
             (Path(d) / "node_modules" / "x" / "package-lock.json").write_text("{}")
             (Path(d) / "go.mod").write_text("module m\n")
             self.assertEqual([p.name for p in lockfiles.find_lockfiles(d)], ["go.mod"])
+
+    def test_dev_root_also_reached_from_production(self):
+        from sponsorplan.model import Graph
+        g = Graph("npm")
+        g.add("app", deps=["peer"])
+        g.add("peer")
+        g.add("tool")
+        g.roots = [("app", False), ("peer", True), ("tool", True)]
+        g.finalize()
+        peer, tool = g.packages["peer"], g.packages["tool"]
+        self.assertTrue(peer.direct and not peer.dev and peer.root_dev)
+        self.assertTrue(tool.direct and tool.dev and tool.root_dev)
+        self.assertGreaterEqual(reliance(peer), 0.4)
+        self.assertGreater(reliance(peer), reliance(tool))
 
     def test_no_roots_falls_back_to_in_degree_zero(self):
         from sponsorplan.model import Graph
@@ -177,6 +191,14 @@ class RegistryTests(unittest.TestCase):
         info, _ = self.lookup("go", "golang.org/x/sys", "v0.1.0", {})
         self.assertEqual(info.links, [])
 
+    def test_npm_sponsor_query_url_uses_repo_funding_yml_then_owner(self):
+        doc = json.dumps({"funding": "https://github.com/chalk/chalk?sponsor=1"})
+        info, _ = self.lookup("npm", "chalk", "", {"https://registry.npmjs.org/chalk/latest": doc,
+                                                  "https://raw.githubusercontent.com/chalk/chalk/HEAD/.github/FUNDING.yml": "github: [sindresorhus]\n"})
+        self.assertEqual(info.links[0].url, "https://github.com/sponsors/sindresorhus")
+        info, _ = self.lookup("npm", "chalk", "", {"https://registry.npmjs.org/chalk/latest": doc})
+        self.assertEqual(info.links[0].url, "https://github.com/sponsors/chalk")
+
     def test_network_failure_is_not_cached_as_unfunded(self):
         cache = Cache()
         http = FakeHttp({"https://registry.npmjs.org/z/latest": (0, "")})
@@ -260,6 +282,17 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(plan.unknown, plan.total_packages)
             self.assertEqual(plan.shares, [])
 
+    def test_unchecked_packages_are_not_called_unfunded(self):
+        plan, _ = self.plan()
+        self.assertNotIn("f", {d.name for d, _ in plan.unfunded})
+
+    def test_skip_recipient(self):
+        plan, _ = self.plan(skip_recipients=["github.com/sponsors/zed", "opencollective.com/*"])
+        urls = {s.recipient.link.url for s in plan.shares}
+        self.assertNotIn("https://github.com/sponsors/zed", urls)
+        self.assertFalse([u for u in urls if "opencollective" in u])
+        self.assertEqual(sum(s.cents for s in plan.shares), 10000)
+
     def test_missing_lockfile(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -325,7 +358,7 @@ class RankingTests(unittest.TestCase):
     def test_order_of_tiers(self):
         d = lambda **k: Dep("npm", "x", **k)
         direct = reliance(d(direct=True, depth=1))
-        direct_dev = reliance(d(direct=True, dev=True, depth=1))
+        direct_dev = reliance(d(direct=True, dev=True, root_dev=True, depth=1))
         trans = reliance(d(depth=2))
         deep = reliance(d(depth=5))
         trans_dev = reliance(d(dev=True, depth=2))

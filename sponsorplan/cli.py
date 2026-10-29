@@ -20,6 +20,8 @@ def _parser():
     p.add_argument("-c", "--currency", default="USD", help="label for amounts (no conversion), default USD")
     p.add_argument("-x", "--exclude", action="append", default=[], metavar="GLOB",
                    help="skip packages by name, e.g. '@mycompany/*' (repeatable)")
+    p.add_argument("--skip-recipient", action="append", default=[], metavar="GLOB",
+                   help="never pay funding pages matching this, e.g. 'github.com/sponsors/myorg' (your own projects don't count for the Pledge)")
     p.add_argument("--no-dev", action="store_true", help="ignore development-only dependencies")
     p.add_argument("--exponent", type=float, default=0.7,
                    help="1 = pay in proportion to reliance, lower = flatter, spreads money to smaller projects (default 0.7)")
@@ -55,14 +57,16 @@ def main(argv=None):
         return 2
 
     def progress(done, total):
-        if sys.stderr.isatty() and not a.output == "-":
+        if sys.stderr.isatty():
             print(f"\rchecking funding {done}/{total}", end="", file=sys.stderr, flush=True)
             if done == total:
                 print("\r" + " " * 40 + "\r", end="", file=sys.stderr)
+        elif done == 1 and not a.offline:
+            print(f"checking {total} packages (first run can take a minute, answers are cached)...", file=sys.stderr)
 
     try:
         plan = build_plan(a.paths, budget, a.currency, a.exclude, not a.no_dev, a.exponent, a.min_amount,
-                          a.max_share, a.top, cache_path=a.cache, offline=a.offline,
+                          a.max_share, a.top, a.skip_recipient, cache_path=a.cache, offline=a.offline,
                           repo_lookup=not a.no_repo_lookup, progress=progress)
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)

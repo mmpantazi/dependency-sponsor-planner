@@ -274,11 +274,20 @@ def uv_lock(path):
     return g
 
 
-def requirements(path):
-    g = Graph("pypi")
+def requirements(path, g=None, _seen=None):
+    g = g or Graph("pypi")
+    _seen = _seen or set()
+    path = Path(path).resolve()
+    if path in _seen or not path.exists():
+        return g
+    _seen.add(path)
     for ln in _text(path).splitlines():
-        ln = ln.split("#", 1)[0].strip()
-        if not ln or ln.startswith(("-", "git+", "http")):
+        ln = ln.split(" #", 1)[0].strip()
+        m = re.match(r"^(?:-r|--requirement)[=\s]+(\S+)", ln)
+        if m:
+            requirements(path.parent / m.group(1), g, _seen)
+            continue
+        if not ln or ln.startswith(("-", "git+", "http", "#")):
             continue
         n = _req_name(ln)
         if n:

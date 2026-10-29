@@ -9,10 +9,14 @@ DEPTH_DECAY = 0.75
 
 def reliance(dep):
     """Tier weight, decayed with depth, boosted by how many other packages pull it in."""
+    transitive = (TRANSITIVE_DEV if dep.dev else TRANSITIVE_PROD) * DEPTH_DECAY ** max(dep.depth - 2, 0)
     if dep.direct:
-        tier = DIRECT_DEV if dep.dev else DIRECT_PROD
+        # a devDependency that production code also pulls in transitively counts at least as that
+        tier = DIRECT_DEV if dep.root_dev else DIRECT_PROD
+        if dep.root_dev and not dep.dev:
+            tier = max(tier, transitive)
     else:
-        tier = (TRANSITIVE_DEV if dep.dev else TRANSITIVE_PROD) * DEPTH_DECAY ** max(dep.depth - 2, 0)
+        tier = transitive
     return tier * (1 + 0.5 * math.log2(1 + dep.dependents))
 
 
@@ -41,7 +45,9 @@ def group_by_recipient(funded, include_dev=True):
             continue
         link = best_link(links)
         r = groups.setdefault(link.url, Recipient(link))
-        r.other_links = [l for l in links if l != r.link] if not r.other_links else r.other_links
+        for l in links:
+            if l != r.link and l not in r.other_links:
+                r.other_links.append(l)
         s = reliance(dep)
         r.packages.append((dep, s))
         r.score += s

@@ -1,14 +1,15 @@
 """Find where a package accepts money: registry metadata, then FUNDING.yml in its repository."""
+import http.client
 import json
 import re
+import ssl
+import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-USER_AGENT = "dependency-sponsor-planner/0.1 (+https://github.com/)"
+USER_AGENT = "dependency-sponsor-planner/0.1"
 CACHE_TTL = 7 * 86400
 
 # Higher = better place to send money to for a company/individual.
@@ -124,21 +125,42 @@ def github_from_go_module(path):
 
 
 class Http:
+    """GET with one shared TLS context and a keep-alive connection per thread and host
+    (a fresh handshake per request cost ~0.2 s of CPU each)."""
+
     def __init__(self, timeout=15, retries=2):
         self.timeout, self.retries = timeout, retries
+        self._ctx = ssl.create_default_context()
+        self._local = threading.local()
 
-    def get(self, url):
+    def _conn(self, host):
+        conns = self._local.__dict__.setdefault("conns", {})
+        if host not in conns:
+            conns[host] = http.client.HTTPSConnection(host, timeout=self.timeout, context=self._ctx)
+        return conns[host]
+
+    def _drop(self, host):
+        conn = self._local.__dict__.setdefault("conns", {}).pop(host, None)
+        if conn:
+            conn.close()
+
+    def get(self, url, _hops=0):
+        parts = urllib.parse.urlsplit(url)
+        target = parts.path + ("?" + parts.query if parts.query else "")
         for attempt in range(self.retries + 1):
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                    return r.status, r.read(30_000_000).decode("utf-8", "replace")
-            except urllib.error.HTTPError as e:
-                if e.code in (429, 500, 502, 503, 504) and attempt < self.retries:
+                conn = self._conn(parts.netloc)
+                conn.request("GET", target, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"})
+                r = conn.getresponse()
+                body = r.read(30_000_000)
+                if r.status in (301, 302, 307, 308) and r.getheader("Location") and _hops < 3:
+                    return self.get(urllib.parse.urljoin(url, r.getheader("Location")), _hops + 1)
+                if r.status in (429, 500, 502, 503, 504) and attempt < self.retries:
                     time.sleep(1.5 * (attempt + 1))
                     continue
-                return e.code, ""
-            except (urllib.error.URLError, TimeoutError, OSError):
+                return r.status, body.decode("utf-8", "replace") if r.status == 200 else ""
+            except (OSError, http.client.HTTPException):
+                self._drop(parts.netloc)
                 if attempt < self.retries:
                     time.sleep(1 + attempt)
                     continue
@@ -205,6 +227,8 @@ class Resolver:
             owner_repo = github_repo(repo)
             if owner_repo:
                 links = self.repo_funding(*owner_repo)
+        if not links and raw.get("fallback") and status != "offline":
+            links = [Link(*raw["fallback"])]
         return Info(links, repo, status)
 
     def repo_funding(self, owner, repo):
@@ -247,10 +271,18 @@ class Resolver:
             return self._pack([], "", status)
         funding = d.get("funding")
         items = funding if isinstance(funding, list) else [funding] if funding else []
-        links = [make_link(i if isinstance(i, str) else (i or {}).get("url")) for i in items]
+        urls = [i if isinstance(i, str) else (i or {}).get("url") for i in items]
+        links = [make_link(u) for u in urls]
         repo = d.get("repository")
         repo = repo if isinstance(repo, str) else (repo or {}).get("url", "")
-        return self._pack(links, repo)
+        # "https://github.com/chalk/chalk?sponsor=1" points at a repo whose FUNDING.yml names the real recipients
+        hint = next((u for u in urls if u and not make_link(u) and github_repo(u) and "sponsor" in u), "")
+        if hint:
+            repo = hint
+        out = self._pack(links, repo)
+        if hint:
+            out["fallback"] = ["github-sponsors", "https://github.com/sponsors/" + github_repo(hint)[0]]
+        return out
 
     def _pypi(self, name, version=""):
         base = f"https://pypi.org/pypi/{urllib.parse.quote(name)}"

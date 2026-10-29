@@ -28,8 +28,10 @@ def merge_graphs(graphs):
         for p in g.packages.values():
             m = merged.get(p.key)
             if m is None:
-                merged[p.key] = Dep(p.ecosystem, p.name, p.version, set(p.deps), p.direct, p.dev, p.depth, p.dependents)
+                merged[p.key] = Dep(p.ecosystem, p.name, p.version, set(p.deps), p.direct, p.dev, p.depth, p.dependents, p.root_dev)
             else:
+                if p.direct:
+                    m.root_dev = m.root_dev and p.root_dev if m.direct else p.root_dev
                 m.direct |= p.direct
                 m.dev &= p.dev
                 m.depth = min(m.depth, p.depth)
@@ -38,7 +40,7 @@ def merge_graphs(graphs):
 
 
 def build_plan(paths, budget, currency="USD", exclude=(), include_dev=True, exponent=0.7, min_amount=5.0,
-               max_share=0.3, top=None, resolver=None, cache_path=None, offline=False, workers=12,
+               max_share=0.3, top=None, skip_recipients=(), resolver=None, cache_path=None, offline=False, workers=12,
                repo_lookup=True, progress=None):
     files = []
     for path in paths:
@@ -68,8 +70,9 @@ def build_plan(paths, budget, currency="USD", exclude=(), include_dev=True, expo
     cache.save()
 
     funded = [(d, i.links) for d, i in zip(deps, infos) if i.links]
-    unfunded = sorted(((d, reliance(d)) for d, i in zip(deps, infos) if not i.links), key=lambda t: -t[1])
-    recipients = group_by_recipient(funded)
+    unfunded = sorted(((d, reliance(d)) for d, i in zip(deps, infos) if not i.links and i.status in ("ok", "not-found")),
+                      key=lambda t: -t[1])
+    recipients = [r for r in group_by_recipient(funded) if not is_excluded(r.link.url.removeprefix("https://"), skip_recipients)]
     shares, leftover = split(recipients, budget, exponent, min_amount, max_share, top)
     return Plan(budget, currency, [str(f) for f in files], len(deps) + len(excluded), shares, leftover / 100, unfunded,
                 sum(1 for i in infos if i.status in ("error", "offline")), len(funded), len(excluded))

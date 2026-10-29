@@ -11,6 +11,7 @@ class Dep:
     dev: bool = False
     depth: int = 0
     dependents: int = 0
+    root_dev: bool = False  # declared only as a development dependency by the project itself
 
     @property
     def key(self):
@@ -48,9 +49,16 @@ class Graph:
                     [(n, False) for n in self.packages]
         for p in self.packages.values():
             p.direct = False
+            p.root_dev = False
             p.dev = True
             p.depth = 0
             p.dependents = 0
+        declared = {}
+        for n, is_dev in roots:
+            declared[n] = declared.get(n, True) and is_dev
+        for n, only_dev in declared.items():
+            self.packages[n].direct = True
+            self.packages[n].root_dev = only_dev
         for p in self.packages.values():
             for d in p.deps:
                 if d in self.packages:
@@ -70,8 +78,6 @@ class Graph:
                         continue  # already reachable from production
                     if p.depth == 0 or level < p.depth:
                         p.depth = level
-                    if level == 1:
-                        p.direct = True
                     if not want_dev:
                         p.dev = False
                     nxt.extend(d for d in p.deps if d in self.packages)
