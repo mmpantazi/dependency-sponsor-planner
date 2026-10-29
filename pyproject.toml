@@ -1,0 +1,18 @@
+[project]
+name = "dependency-sponsor-planner"
+version = "0.1.0"
+description = "Find which of your dependencies accept funding and split a yearly budget between them"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+sponsor-plan = "sponsorplan.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sponsorplan"]
